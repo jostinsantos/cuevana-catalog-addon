@@ -1,9 +1,9 @@
 /**
- * Addon catálogo Cuevana — TODA la lógica vive en ESTE repo.
- * Adaptado del scraper Dart + enriquecimiento TMDB (misma key del addon TMDB).
- *
- * Base Cuevana: https://wv3.cuevana3.eu
- * TMDB: para tmdbId, géneros extra, temporadas y capítulos
+ * Addon catálogo Cuevana v1.2
+ * - Lista / busca en Cuevana (wv3.cuevana3.eu)
+ * - IDs en formato tmdb:movie:ID / tmdb:series:ID (igual que el addon TMDB)
+ *   → así la app carga temporadas/capítulos con su TmdbService
+ * - extra.tmdbId, extra.seasons, extra.cuevanaSlug, etc.
  */
 
 var BASE = 'https://wv3.cuevana3.eu';
@@ -13,26 +13,12 @@ var TMDB_KEY = 'a2d9bbed370d9f678e34006f8750a5a5';
 var TMDB_LANG = 'es-MX';
 
 var GENEROS = [
-  'accion',
-  'aventura',
-  'animacion',
-  'ciencia-ficcion',
-  'crimen',
-  'drama',
-  'familia',
-  'fantasia',
-  'misterio',
-  'romance',
-  'suspense',
-  'terror',
+  'accion', 'aventura', 'animacion', 'ciencia-ficcion', 'crimen',
+  'drama', 'familia', 'fantasia', 'misterio', 'romance', 'suspense', 'terror',
 ];
 
 var UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-// ────────────────────────────────────────────────
-// Helpers de red y parseo
-// ────────────────────────────────────────────────
 
 async function fetchHtml(url) {
   var res = await fetch(url, {
@@ -75,10 +61,6 @@ function yearFromDate(d) {
   return null;
 }
 
-// ────────────────────────────────────────────────
-// TMDB helpers
-// ────────────────────────────────────────────────
-
 async function tmdbGet(path, query) {
   var q = Object.assign(
     { api_key: TMDB_KEY, language: TMDB_LANG },
@@ -89,16 +71,11 @@ async function tmdbGet(path, query) {
       return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]);
     })
     .join('&');
-  var url = TMDB_BASE + path + '?' + qs;
-  var res = await fetch(url);
+  var res = await fetch(TMDB_BASE + path + '?' + qs);
   if (!res.ok) throw new Error('TMDB HTTP ' + res.status);
   return await res.json();
 }
 
-/**
- * Busca en TMDB por título (+ año opcional) y devuelve el mejor match.
- * type: 'movie' | 'tv'
- */
 async function tmdbFindByTitle(title, type, year) {
   if (!title) return null;
   var path = type === 'tv' || type === 'series' ? '/search/tv' : '/search/movie';
@@ -110,49 +87,27 @@ async function tmdbFindByTitle(title, type, year) {
   try {
     var data = await tmdbGet(path, query);
     var results = data.results || [];
-    if (!results.length) {
-      // reintento sin año
-      if (year) {
-        data = await tmdbGet(path, { query: title, page: 1 });
-        results = data.results || [];
-      }
+    if (!results.length && year) {
+      data = await tmdbGet(path, { query: title, page: 1 });
+      results = data.results || [];
     }
-    if (!results.length) return null;
-    return results[0];
+    return results.length ? results[0] : null;
   } catch (e) {
     return null;
   }
 }
 
-/**
- * Detalle TMDB completo (movie o tv) + seasons si es serie
- */
 async function tmdbDetail(tmdbId, type) {
   if (!tmdbId) return null;
   var media = type === 'tv' || type === 'series' ? 'tv' : 'movie';
   try {
-    var data = await tmdbGet('/' + media + '/' + tmdbId, {});
-    return data;
+    return await tmdbGet('/' + media + '/' + tmdbId, {
+      append_to_response: 'external_ids',
+    });
   } catch (e) {
     return null;
   }
 }
-
-/**
- * Episodios de una temporada TMDB
- */
-async function tmdbSeasonEpisodes(tmdbId, seasonNumber) {
-  try {
-    var data = await tmdbGet('/tv/' + tmdbId + '/season/' + seasonNumber, {});
-    return data;
-  } catch (e) {
-    return null;
-  }
-}
-
-// ────────────────────────────────────────────────
-// Mapear item Cuevana → formato app
-// ────────────────────────────────────────────────
 
 function mapItem(raw, forceType) {
   if (!raw || typeof raw !== 'object') return null;
@@ -164,17 +119,18 @@ function mapItem(raw, forceType) {
   var isTv =
     forceType === 'tv' ||
     forceType === 'series' ||
-    urlSlug.indexOf('series/') === 0 ||
-    (raw.url && String(raw.url.slug || '').indexOf('series/') === 0);
+    urlSlug.indexOf('series/') === 0;
 
   if (forceType === 'episode' || (slugObj.season != null && slugObj.episode != null)) {
     isTv = true;
   }
 
   var type = isTv ? 'series' : 'movie';
-  var tmdbId = raw.TMDbId != null ? String(raw.TMDbId) : null;
-  // Preferir slug para poder construir /ver-pelicula|serie/SLUG en getMeta
-  var idPart = slug || tmdbId || 'unknown';
+  var mediaType = isTv ? 'tv' : 'movie';
+
+  var tmdbRaw = raw.TMDbId != null ? String(raw.TMDbId) : null;
+  var tmdbId = tmdbRaw ? parseInt(tmdbRaw, 10) : null;
+  if (tmdbId && isNaN(tmdbId)) tmdbId = null;
 
   var title =
     (raw.titles && raw.titles.name) ||
@@ -196,12 +152,9 @@ function mapItem(raw, forceType) {
   var rating =
     (raw.rate && raw.rate.average != null
       ? Number(raw.rate.average)
-      : raw.rating != null
-        ? Number(raw.rating)
-        : null) || null;
+      : null) || null;
 
   var year = yearFromDate(raw.releaseDate);
-
   var overview = raw.overview || raw.sinopsis || '';
 
   var genres = [];
@@ -213,39 +166,50 @@ function mapItem(raw, forceType) {
       .filter(Boolean);
   }
 
+  // ID crítico: la app solo carga temporadas si el id es tmdb:series:N / tmdb:movie:N
+  var id;
+  if (tmdbId) {
+    id = 'tmdb:' + type + ':' + tmdbId;
+  } else if (slug) {
+    id = 'cuevana:' + type + ':' + slug;
+  } else {
+    id = 'cuevana:' + type + ':unknown';
+  }
+
+  var cuevanaUrl = null;
+  if (slug) {
+    cuevanaUrl =
+      BASE + (isTv ? '/ver-serie/' : '/ver-pelicula/') + slug;
+  }
+
+  var extra = {
+    source: 'cuevana',
+    mediaType: mediaType,
+  };
+  if (tmdbId) extra.tmdbId = tmdbId;
+  if (slug) extra.cuevanaSlug = slug;
+  if (cuevanaUrl) extra.cuevanaUrl = cuevanaUrl;
+
   var item = {
-    id: 'cuevana:' + type + ':' + idPart,
+    id: id,
     title: String(title).trim(),
     type: type,
     poster: poster,
     backdrop: backdrop,
     overview: overview,
-    year: year,
+    year: year != null ? String(year) : null,
     rating: rating,
+    genres: genres,
+    extra: extra,
   };
 
-  // Géneros siempre como array (aunque vacío) para que la app los vea
-  item.genres = genres;
-
-  if (tmdbId) {
-    var n = parseInt(tmdbId, 10);
-    item.tmdbId = isNaN(n) ? tmdbId : n;
-  }
+  if (tmdbId) item.tmdbId = tmdbId;
   if (slug) item.slug = slug;
-
-  if (slug) {
-    item.url =
-      BASE +
-      (isTv ? '/ver-serie/' : '/ver-pelicula/') +
-      slug;
-  }
+  if (cuevanaUrl) item.url = cuevanaUrl;
 
   return item;
 }
 
-/**
- * Fetch genérico de listados Cuevana
- */
 async function fetchList(opts) {
   opts = opts || {};
   var tipo = opts.tipo || null;
@@ -260,7 +224,6 @@ async function fetchList(opts) {
       throw new Error('Género no válido: ' + genero);
     }
     path = '/genero/' + genero;
-    mode = 'movies';
   } else {
     switch (String(tipo || '').toLowerCase()) {
       case 'movie':
@@ -296,14 +259,11 @@ async function fetchList(opts) {
   if (!next) throw new Error('No se encontró __NEXT_DATA__ en ' + url);
 
   var pp = (next.props && next.props.pageProps) || {};
-
   var total = 1;
   var current = page;
-
   total = readInt(pp.pages, total);
   total = readInt(pp.totalPages, total);
   total = readInt(pp.total_pages, total);
-
   current = readInt(pp.page, current);
   current = readInt(pp.currentPage, current);
   current = readInt(pp.current_page, current);
@@ -324,16 +284,16 @@ async function fetchList(opts) {
           TMDbId: ep.TMDbId,
           releaseDate: ep.releaseDate,
           slug: { name: sSlug, season: s, episode: e },
+          url: { slug: 'series/' + sSlug },
         },
-        'episode'
+        'tv'
       );
       if (mapped) {
-        mapped.type = 'series';
-        mapped.id = 'cuevana:episode:' + sSlug + '-s' + s + 'e' + e;
-        mapped.url =
+        mapped.extra = mapped.extra || {};
+        mapped.extra.season = readInt(s, null);
+        mapped.extra.episode = readInt(e, null);
+        mapped.extra.cuevanaUrl =
           BASE + '/episodio/' + sSlug + '-temporada-' + s + '-episodio-' + e;
-        mapped.season = readInt(s, null);
-        mapped.episode = readInt(e, null);
         items.push(mapped);
       }
     }
@@ -354,28 +314,23 @@ async function fetchList(opts) {
   };
 }
 
-// ────────────────────────────────────────────────
-// Enriquecer un item con datos TMDB (tmdbId, géneros, seasons…)
-// ────────────────────────────────────────────────
-
 async function enrichWithTmdb(item, opts) {
   opts = opts || {};
   var wantSeasons = !!opts.seasons;
-  var wantEpisodes = opts.episodes === true; // traer eps de todas las temporadas (puede ser lento)
-  var maxSeasonsEps = opts.maxSeasonsEps || 2; // si wantEpisodes, cuántas temporadas
-
   if (!item) return item;
 
   var type = item.type === 'series' ? 'tv' : 'movie';
-  var tmdbId = item.tmdbId || null;
+  var tmdbId = (item.extra && item.extra.tmdbId) || item.tmdbId || null;
   var tmdbData = null;
 
-  // 1) Si no hay tmdbId → buscar por título
   if (!tmdbId) {
-    var found = await tmdbFindByTitle(item.title, type, item.year);
+    var found = await tmdbFindByTitle(
+      item.title,
+      type,
+      item.year ? parseInt(item.year, 10) : null
+    );
     if (found && found.id) {
       tmdbId = found.id;
-      item.tmdbId = tmdbId;
       if (!item.poster && found.poster_path) {
         item.poster = TMDB_IMG + '/w342' + found.poster_path;
       }
@@ -384,9 +339,8 @@ async function enrichWithTmdb(item, opts) {
       }
       if (!item.overview && found.overview) item.overview = found.overview;
       if (!item.year) {
-        item.year = yearFromDate(
-          found.release_date || found.first_air_date
-        );
+        var y = yearFromDate(found.release_date || found.first_air_date);
+        if (y) item.year = String(y);
       }
       if (!item.rating && found.vote_average) {
         item.rating = Number(found.vote_average);
@@ -394,13 +348,19 @@ async function enrichWithTmdb(item, opts) {
     }
   }
 
-  // 2) Detalle completo si necesitamos géneros / seasons / overview
+  if (tmdbId) {
+    item.tmdbId = tmdbId;
+    item.extra = item.extra || {};
+    item.extra.tmdbId = tmdbId;
+    item.extra.mediaType = type;
+    item.id = 'tmdb:' + (type === 'tv' ? 'series' : 'movie') + ':' + tmdbId;
+  }
+
   var needDetail =
     wantSeasons ||
     !item.genres ||
     !item.genres.length ||
-    !item.overview ||
-    (type === 'tv' && wantSeasons);
+    !item.overview;
 
   if (tmdbId && needDetail) {
     tmdbData = await tmdbDetail(tmdbId, type);
@@ -423,23 +383,29 @@ async function enrichWithTmdb(item, opts) {
       item.rating = Number(tmdbData.vote_average);
     }
     if (!item.year) {
-      item.year = yearFromDate(
-        tmdbData.release_date || tmdbData.first_air_date
-      );
+      var y2 = yearFromDate(tmdbData.release_date || tmdbData.first_air_date);
+      if (y2) item.year = String(y2);
     }
-    if (tmdbData.runtime) item.runtime = tmdbData.runtime;
-    if (tmdbData.number_of_seasons) {
-      item.numberOfSeasons = tmdbData.number_of_seasons;
-    }
-    if (tmdbData.number_of_episodes) {
-      item.numberOfEpisodes = tmdbData.number_of_episodes;
+    if (!item.title && (tmdbData.title || tmdbData.name)) {
+      item.title = tmdbData.title || tmdbData.name;
     }
 
-    // Temporadas (series)
+    item.extra = item.extra || {};
+    if (tmdbData.runtime) item.extra.runtime = tmdbData.runtime;
+    if (tmdbData.number_of_seasons != null) {
+      item.extra.numberOfSeasons = tmdbData.number_of_seasons;
+    }
+    if (tmdbData.number_of_episodes != null) {
+      item.extra.numberOfEpisodes = tmdbData.number_of_episodes;
+    }
+    if (tmdbData.external_ids && tmdbData.external_ids.imdb_id) {
+      item.extra.imdbId = tmdbData.external_ids.imdb_id;
+    }
+
     if (wantSeasons && type === 'tv' && Array.isArray(tmdbData.seasons)) {
-      item.seasons = tmdbData.seasons
+      item.extra.seasons = tmdbData.seasons
         .filter(function (s) {
-          return s.season_number > 0; // omitir especiales (0)
+          return s.season_number > 0;
         })
         .map(function (s) {
           return {
@@ -449,47 +415,16 @@ async function enrichWithTmdb(item, opts) {
             overview: s.overview || '',
             airDate: s.air_date || null,
             poster: s.poster_path
-              ? TMDB_IMG + '/w342' + s.poster_path
+              ? TMDB_IMG + '/w300' + s.poster_path
               : null,
           };
         });
-
-      // Opcional: traer episodios de las primeras N temporadas
-      if (wantEpisodes && item.seasons.length) {
-        var limit = Math.min(item.seasons.length, maxSeasonsEps);
-        for (var i = 0; i < limit; i++) {
-          var sn = item.seasons[i].seasonNumber;
-          var seasonData = await tmdbSeasonEpisodes(tmdbId, sn);
-          if (seasonData && Array.isArray(seasonData.episodes)) {
-            item.seasons[i].episodes = seasonData.episodes.map(function (ep) {
-              return {
-                episodeNumber: ep.episode_number,
-                seasonNumber: ep.season_number,
-                name: ep.name || 'Episodio ' + ep.episode_number,
-                overview: ep.overview || '',
-                airDate: ep.air_date || null,
-                runtime: ep.runtime || null,
-                still: ep.still_path
-                  ? TMDB_IMG + '/w300' + ep.still_path
-                  : null,
-                rating: ep.vote_average || null,
-              };
-            });
-          }
-        }
-      }
     }
   }
 
-  // Asegurar que genres siempre sea array
   if (!item.genres) item.genres = [];
-
   return item;
 }
-
-// ────────────────────────────────────────────────
-// API pública del addon
-// ────────────────────────────────────────────────
 
 async function getHome(args, config) {
   var rows = [];
@@ -498,7 +433,7 @@ async function getHome(args, config) {
     var movies = await fetchList({ tipo: 'movie', page: 1 });
     rows.push({
       id: 'cuevana-movies',
-      title: 'Películas',
+      title: 'Películas (Cuevana)',
       items: movies.items,
     });
   } catch (e) {}
@@ -507,7 +442,7 @@ async function getHome(args, config) {
     var series = await fetchList({ tipo: 'tv', page: 1 });
     rows.push({
       id: 'cuevana-series',
-      title: 'Series',
+      title: 'Series (Cuevana)',
       items: series.items,
     });
   } catch (e) {}
@@ -553,11 +488,12 @@ async function search(args, config) {
     if (m) items.push(m);
   }
 
-  // Enrich ligero: solo asegurar tmdbId si falta (sin seasons para no ralentizar búsqueda)
-  for (var j = 0; j < items.length; j++) {
-    if (!items[j].tmdbId) {
+  var missing = 0;
+  for (var j = 0; j < items.length && missing < 5; j++) {
+    if (!items[j].extra || !items[j].extra.tmdbId) {
       try {
         items[j] = await enrichWithTmdb(items[j], { seasons: false });
+        missing++;
       } catch (e) {}
     }
   }
@@ -570,9 +506,7 @@ async function discover(args, config) {
   var page = (args && args.page) || 1;
   var genero = (args && (args.genero || args.genre || args.genreId)) || null;
 
-  if (genero && /^\d+$/.test(String(genero))) {
-    genero = null;
-  }
+  if (genero && /^\d+$/.test(String(genero))) genero = null;
 
   var result = await fetchList({
     tipo: genero ? null : cat,
@@ -588,53 +522,55 @@ async function discover(args, config) {
   };
 }
 
-/**
- * Meta / detalle
- * - Siempre enriquece con TMDB (tmdbId + géneros)
- * - Si es serie → trae temporadas y episodios de las primeras temporadas
- */
 async function getMeta(args, config) {
   var id = (args && args.id) || '';
   var parts = String(id).split(':');
 
   var media = 'movie';
   var key = id;
+  var knownTmdbId = null;
 
-  if (parts[0] === 'cuevana' && parts.length >= 3) {
-    media =
-      parts[1] === 'series' || parts[1] === 'tv' || parts[1] === 'episode'
-        ? 'tv'
-        : 'movie';
+  if (parts[0] === 'tmdb' && parts.length >= 3) {
+    media = parts[1] === 'series' || parts[1] === 'tv' ? 'tv' : 'movie';
+    knownTmdbId = parseInt(parts[2], 10);
+    key = parts[2];
+  } else if (parts[0] === 'cuevana' && parts.length >= 3) {
+    media = parts[1] === 'series' || parts[1] === 'tv' || parts[1] === 'episode'
+      ? 'tv'
+      : 'movie';
     key = parts.slice(2).join(':');
   }
 
-  var isNumeric = /^\d+$/.test(key);
-  var detailUrl;
   var item = null;
   var raw = null;
 
-  if (isNumeric) {
-    // id legacy solo con tmdbId → enriquecemos solo con TMDB
+  if (knownTmdbId && !isNaN(knownTmdbId)) {
     item = {
-      id: id,
+      id: 'tmdb:' + (media === 'tv' ? 'series' : 'movie') + ':' + knownTmdbId,
       title: '',
       type: media === 'tv' ? 'series' : 'movie',
       overview: '',
       poster: null,
       genres: [],
-      tmdbId: parseInt(key, 10),
+      extra: {
+        source: 'cuevana',
+        tmdbId: knownTmdbId,
+        mediaType: media,
+      },
+      tmdbId: knownTmdbId,
     };
-  } else {
-    detailUrl =
+  } else if (!/^\d+$/.test(key)) {
+    var detailUrl =
       BASE + (media === 'tv' ? '/ver-serie/' : '/ver-pelicula/') + key;
-
-    var html = await fetchHtml(detailUrl);
-    var next = getNextData(html);
-    if (!next) throw new Error('No se encontró __NEXT_DATA__ en detalle');
-
-    var pp = (next.props && next.props.pageProps) || {};
-    raw = pp.thisMovie || pp.thisSerie || pp.movie || pp.serie || null;
-    if (!raw && pp.movies && pp.movies[0]) raw = pp.movies[0];
+    try {
+      var html = await fetchHtml(detailUrl);
+      var next = getNextData(html);
+      if (next) {
+        var pp = (next.props && next.props.pageProps) || {};
+        raw = pp.thisMovie || pp.thisSerie || pp.movie || pp.serie || null;
+        if (!raw && pp.movies && pp.movies[0]) raw = pp.movies[0];
+      }
+    } catch (e) {}
 
     if (raw) {
       item = mapItem(raw, media === 'tv' ? 'tv' : 'movie');
@@ -646,18 +582,31 @@ async function getMeta(args, config) {
         overview: '',
         poster: null,
         genres: [],
+        extra: { source: 'cuevana', mediaType: media, cuevanaSlug: key },
       };
     }
+  } else {
+    item = {
+      id: id,
+      title: '',
+      type: media === 'tv' ? 'series' : 'movie',
+      overview: '',
+      poster: null,
+      genres: [],
+      extra: {
+        source: 'cuevana',
+        tmdbId: parseInt(key, 10),
+        mediaType: media,
+      },
+      tmdbId: parseInt(key, 10),
+    };
   }
 
-  if (!item) throw new Error('No se pudo construir el item para ' + id);
+  if (!item) throw new Error('No se pudo construir item para ' + id);
 
-  // Forzar el id que pidió la app
-  item.id = id;
-
-  // Cast desde Cuevana si existe
   if (raw && raw.cast && raw.cast.acting) {
-    item.cast = raw.cast.acting
+    item.extra = item.extra || {};
+    item.extra.cast = raw.cast.acting
       .slice(0, 15)
       .map(function (c) {
         return c && c.name ? String(c.name) : null;
@@ -665,17 +614,11 @@ async function getMeta(args, config) {
       .filter(Boolean);
   }
 
-  // ── Enriquecimiento TMDB (tmdbId + géneros + temporadas/capítulos) ──
-  var isSeries = item.type === 'series';
   item = await enrichWithTmdb(item, {
-    seasons: isSeries,
-    episodes: isSeries, // trae episodios de las primeras 2 temporadas
-    maxSeasonsEps: 3,
+    seasons: item.type === 'series',
   });
 
-  // Asegurar genres siempre presente
   if (!item.genres) item.genres = [];
-
   return { item: item };
 }
 
