@@ -1,0 +1,25 @@
+{
+  "id": "cuevana-catalog",
+  "name": "Cuevana Catalog",
+  "version": "1.0.0",
+  "description": "Catálogo Cuevana (wv3.cuevana3.eu). Scraper + lógica en index.js del repo. No requiere API key.",
+  "logo": "https://wv3.cuevana3.eu/favicon-32x32.png",
+  "author": "Community",
+  "types": ["catalog"],
+  "type": "catalog",
+  "entry": "index.js",
+  "resources": ["catalog", "meta", "search"],
+  "exports": ["getHome", "discover", "search", "getMeta"],
+  "supportedTypes": ["movie", "tv"],
+  "contentLanguage": ["es"],
+  "extra": {
+    "provider": "js",
+    "language": "es-MX",
+    "supports": {
+      "home": true,
+      "discover": true,
+      "search": true,
+      "contentPage": true
+    }
+  }
+}
