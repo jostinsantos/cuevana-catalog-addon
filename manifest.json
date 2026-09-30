@@ -1,8 +1,8 @@
 {
   "id": "cuevana-catalog",
   "name": "Cuevana Catalog",
-  "version": "1.0.0",
-  "description": "Catálogo Cuevana (wv3.cuevana3.eu). Scraper + lógica en index.js del repo. No requiere API key.",
+  "version": "1.1.0",
+  "description": "Catálogo Cuevana (wv3.cuevana3.eu) + enriquecimiento TMDB (tmdbId, géneros, temporadas y capítulos). Lógica en index.js.",
   "logo": "https://wv3.cuevana3.eu/favicon-32x32.png",
   "author": "Community",
   "types": ["catalog"],
